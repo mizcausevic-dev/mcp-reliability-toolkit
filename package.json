@@ -1,0 +1,59 @@
+{
+  "name": "mcp-reliability-toolkit",
+  "version": "0.1.0",
+  "description": "MCP server exposing SRE math + reliability config recipes. Compute SLO burn rate, design rate limiters, pick circuit breaker thresholds, and emit drop-in configs for the Platform Reliability Stack.",
+  "type": "module",
+  "bin": {
+    "mcp-reliability-toolkit": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "sre",
+    "slo",
+    "reliability",
+    "rate-limiter",
+    "circuit-breaker",
+    "kinetic-gain"
+  ],
+  "author": "Miz Causevic <miz@kineticgain.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mizcausevic-dev/mcp-reliability-toolkit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mizcausevic-dev/mcp-reliability-toolkit/issues"
+  },
+  "homepage": "https://kineticgain.com/",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
