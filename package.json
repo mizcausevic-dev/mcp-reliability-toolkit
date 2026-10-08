@@ -1,7 +1,7 @@
 {
   "name": "mcp-reliability-toolkit",
   "version": "0.1.0",
-  "description": "MCP server exposing SRE math + reliability config recipes. Compute SLO burn rate, design rate limiters, pick circuit breaker thresholds, and emit drop-in configs for the Platform Reliability Stack.",
+  "description": "Local MCP server for SLO calculations and reliability planning, with Python and Rust setup examples that require integration review.",
   "type": "module",
   "bin": {
     "mcp-reliability-toolkit": "./dist/index.js"
@@ -16,6 +16,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "vitest run",
+    "test:stdio": "npm run build && node scripts/smoke-stdio.mjs",
+    "test:recipes": "npm run build && node scripts/check-recipe-syntax.mjs",
     "test:watch": "vitest",
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc --noEmit"
@@ -45,7 +47,7 @@
   },
   "homepage": "https://kineticgain.com/",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "zod": "^3.23.0"
   },
   "devDependencies": {
@@ -54,6 +56,6 @@
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
     "typescript": "^5.5.0",
-    "vitest": "^2.0.0"
+    "vitest": "4.1.11"
   }
 }

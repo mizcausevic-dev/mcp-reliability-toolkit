@@ -4,7 +4,7 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D20-339933)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**MCP server that exposes the Platform Reliability Stack's math as Claude-callable tools.** Compute SLO burn rate, size a token-bucket rate limiter, pick circuit-breaker thresholds, or generate a whole layered reliability stack — and get drop-in Python + Rust configs back.
+**Local stdio MCP server for reliability planning.** Compute SLO burn rate, size a token bucket, and generate Python/Rust setup examples for a proposed reliability pattern. The examples require integration review; the server does not observe a live service or enforce a policy.
 
 Pairs with:
 
@@ -18,7 +18,7 @@ Pairs with:
 
 The Platform Reliability Stack already gives you the math (`slo-budget-tracker`) and the primitives (`reliability-toolkit-rs`). What it didn't give you was the moment in a design conversation where you say "Claude, given 500 rps and a 99.9 SLO, what should my breaker + bulkhead look like?" — and have Claude actually compute it instead of vibing.
 
-This server fills that gap. Every tool is a thin, validated wrapper around pure math from `src/sre_math.ts`. The numbers Claude shows you are the same numbers `slo-budget-tracker` would compute server-side. There's no LLM-in-the-loop math.
+This server provides deterministic calculations from `src/sre_math.ts`. Its success ratio, error budget remaining, and burn rate match the corresponding `slo-budget-tracker` snapshot formulas for the same counts. Its single-window alert tier and time-to-exhaustion are estimates; `slo-budget-tracker` uses separately sampled windows for alerts. No LLM computes the numbers.
 
 ---
 
@@ -26,49 +26,43 @@ This server fills that gap. Every tool is a thin, validated wrapper around pure 
 
 | Tool | What it does |
 | --- | --- |
-| `compute_slo_burn` | Burn rate, error budget remaining, time-to-exhaustion, SRE-workbook alert level — from raw `(target, failures, total, window_seconds)`. Mirrors `slo-budget-tracker.SLOTracker.snapshot()`. |
-| `design_rate_limiter` | Token-bucket sizing from `rps` + `burst_factor`, plus Python (`rate-limit-shield`) and Rust (`reliability-toolkit`) snippets and a JSON config. |
-| `design_circuit_breaker` | Threshold + cool-down + half-open sizing with sanity-check notes. When `protected_slo_target` is supplied it flags settings that look inconsistent with the SLO's error budget. |
-| `compose_reliability_pattern` | Given service name + rps + protected SLO target, returns the canonical layered stack — rate-limit → bulkhead → breaker → retry → SLO tracker — plus a paste-ready Python and Rust config. |
+| `compute_slo_burn` | Burn rate and error budget from raw `(target, failures, total, window_seconds)`, plus a single-window alert tier and exhaustion estimate. This does not make a paging decision. |
+| `design_rate_limiter` | Token-bucket sizing from `rps` + `burst_factor`, plus Python (`rate-limit-shield`) and Rust (`reliability-toolkit`) setup examples and a JSON config. |
+| `design_circuit_breaker` | Threshold + cool-down + half-open setup examples with basic validation notes. An SLO target alone cannot determine a safe consecutive-failure threshold. |
+| `compose_reliability_pattern` | Given service name + rps + protected SLO target, returns a proposed layered design and setup examples. Retry, monitoring, and call-path wiring are not implemented by the generated snippets. |
 
-Each tool advertises a JSON Schema. Bad input is rejected with a typed error — no silent coercion.
+Each tool advertises a JSON Schema. Bad input, including unknown fields, is rejected without coercion.
+
+The server uses stdio only. Its handlers read caller-supplied values and return calculations; they do not read service telemetry, call providers, persist requests, or open an HTTP listener. Your MCP client controls any onward use of the returned text.
 
 ---
 
 ## Install
 
-The server speaks stdio MCP, the same shape as every Claude Desktop tool.
+The server speaks stdio MCP. **This package is not currently published on npm.** Build from the reviewed source revision and point your MCP client at its absolute entry-point path.
 
-### Quick start
+### Build from source
 
 ```bash
-npm install -g mcp-reliability-toolkit
+git clone https://github.com/mizcausevic-dev/mcp-reliability-toolkit.git
+cd mcp-reliability-toolkit
+npm ci
+npm run build
 ```
 
 ```jsonc
-// ~/.config/Claude/claude_desktop_config.json
+// Claude Desktop MCP configuration (choose the path for your OS)
 {
   "mcpServers": {
     "reliability-toolkit": {
-      "command": "mcp-reliability-toolkit"
+      "command": "node",
+      "args": ["/absolute/path/to/mcp-reliability-toolkit/dist/index.js"]
     }
   }
 }
 ```
 
-Restart Claude Desktop. The four tools above will appear under the tools panel.
-
-### Run locally from source
-
-```bash
-git clone https://github.com/mizcausevic-dev/mcp-reliability-toolkit.git
-cd mcp-reliability-toolkit
-npm install
-npm run build
-node dist/index.js   # speaks MCP stdio
-```
-
-Then wire `dist/index.js` into the same `claude_desktop_config.json` block, using an absolute path.
+Restart Claude Desktop. Windows users can set `args` to a full path such as `C:\\Users\\you\\mcp-reliability-toolkit\\dist\\index.js`.
 
 ---
 
@@ -76,7 +70,7 @@ Then wire `dist/index.js` into the same `claude_desktop_config.json` block, usin
 
 > *"My checkout service does 200 rps and we want three nines. Design the stack."*
 
-Claude calls `compose_reliability_pattern({ service_name: "checkout", rps: 200, protected_slo_target: 0.999 })` and gets back:
+Claude calls `compose_reliability_pattern({ service_name: "checkout", rps: 200, protected_slo_target: 0.999 })` and gets back a proposed design. Relevant fields include:
 
 ```json
 {
@@ -92,26 +86,31 @@ Claude calls `compose_reliability_pattern({ service_name: "checkout", rps: 200, 
     "rps": 200, "burst": 400, "refill_interval_ms": 5,
     "bulkhead_capacity": 400,
     "config": {
-      "python": "from rate_limit_shield import RateLimiter, Bulkhead\nlimiter = RateLimiter(rps=200, burst=400)\nbulkhead = Bulkhead(capacity=400)",
+      "python": "from threading import BoundedSemaphore\nfrom rate_limit_shield import TokenBucket\nlimiter = TokenBucket(capacity=400, refill_rate=200)\nbulkhead = BoundedSemaphore(value=400)",
       "rust":   "use reliability_toolkit::{RateLimiter, Bulkhead};\nlet limiter = RateLimiter::new(200.0, 400);\nlet pool    = Bulkhead::new(400);"
     }
   },
-  "circuit_breaker": { "failure_threshold": 5, "cool_down_seconds": 30, ... },
+  "circuit_breaker": { "failure_threshold": 5, "cool_down_seconds": 30 },
   "slo": { "target": 0.999, "window_seconds": 2592000 }
 }
 ```
 
-…with a paste-ready Python and Rust config block at the end. Claude reads the tool output and explains the recommendation; the math came from a deterministic function, not the model.
+The Python example uses `rate-limit-shield.TokenBucket`, its `CircuitBreaker`, and a standard-library semaphore. The Rust example uses `reliability-toolkit` primitives. These are setup snippets, not a complete runnable service. Review burst/concurrency assumptions, configure retries and telemetry, and test against real traffic before adopting them.
+
+`rate-limit-shield` was not available from PyPI when checked for this review; install a reviewed revision from its [source repository](https://github.com/mizcausevic-dev/rate-limit-shield) before running the Python example. `slo-budget-tracker` and the `reliability-toolkit` Rust crate have published packages, but this repository does not pin or bundle them.
 
 ---
 
 ## Tests
 
 ```bash
-npm install
+npm ci
 npm run typecheck
 npm run build
 npm test
+npm run test:stdio
+npm run test:recipes # requires local Python and rustc; validates syntax against stub Rust signatures
+npm run lint
 ```
 
 CI matrix runs Node 20 and 22.
@@ -124,7 +123,7 @@ CI matrix runs Node 20 and 22.
 src/
   index.ts        # MCP stdio server entry point
   tools.ts        # tool registry: zod schemas, JSON-Schema export, handlers
-  sre_math.ts     # pure functions; identical math to slo-budget-tracker
+  sre_math.ts     # pure functions; core ratio and burn formulas match slo-budget-tracker
 tests/
   sre_math.test.ts
   tools.test.ts

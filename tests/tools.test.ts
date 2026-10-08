@@ -41,8 +41,9 @@ describe("MCP tool registry", () => {
   it("design_rate_limiter handler emits both language snippets", () => {
     const tool = tools.find((t) => t.name === "design_rate_limiter")!;
     const result = tool.handler({ rps: 50 }) as Record<string, { python: string; rust: string }>;
-    expect(result.config.python).toContain("RateLimiter");
+    expect(result.config.python).toContain("TokenBucket");
     expect(result.config.rust).toContain("RateLimiter::new(50");
+    expect(() => tool.handler({ rps: 1e-300 })).toThrow();
   });
 
   it("design_circuit_breaker validates inputs", () => {
@@ -50,6 +51,7 @@ describe("MCP tool registry", () => {
     // failure_threshold must be a positive integer.
     expect(() => tool.handler({ failure_threshold: 0 })).toThrow();
     expect(() => tool.handler({ failure_threshold: 1.5 })).toThrow();
+    expect(() => tool.handler({ cool_down_seconds: 1e300 })).toThrow();
   });
 
   it("compose_reliability_pattern returns the layered stack + config", () => {
@@ -66,5 +68,15 @@ describe("MCP tool registry", () => {
   it("rejects an unknown argument shape", () => {
     const burn = tools.find((t) => t.name === "compute_slo_burn")!;
     expect(() => burn.handler({ target: "high", failures: 1, total: 100, window_seconds: 1 })).toThrow();
+    expect(() => burn.handler({ target: 0.99, failures: 1, total: 100, window_seconds: 1, extra: true })).toThrow();
+  });
+
+  it("advertises integer counts and numeric bounds in its JSON Schema", () => {
+    const burn = tools.find((t) => t.name === "compute_slo_burn")!;
+    const properties = burn.inputSchema.properties as Record<string, Record<string, unknown>>;
+    expect(properties.failures.type).toBe("integer");
+    expect(properties.failures.minimum).toBe(0);
+    expect(properties.target.exclusiveMinimum).toBe(0);
+    expect(properties.target.exclusiveMaximum).toBe(1);
   });
 });

@@ -77,7 +77,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  // eslint-disable-next-line no-console
   console.error("mcp-reliability-toolkit failed to start:", err);
   process.exit(1);
 });
