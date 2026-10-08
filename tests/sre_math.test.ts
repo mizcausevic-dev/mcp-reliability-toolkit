@@ -65,6 +65,12 @@ describe("computeBurn", () => {
     expect(() => computeBurn({ target: 0.99, failures: -1, total: 100, window_seconds: 60 })).toThrow();
     expect(() => computeBurn({ target: 0.99, failures: 50, total: 10, window_seconds: 60 })).toThrow();
   });
+
+  it("rejects fractional or unsafe observation counts", () => {
+    expect(() => computeBurn({ target: 0.99, failures: 0.5, total: 100, window_seconds: 60 })).toThrow();
+    expect(() => computeBurn({ target: 0.99, failures: 1, total: Number.MAX_SAFE_INTEGER + 1, window_seconds: 60 })).toThrow();
+    expect(() => computeBurn({ target: 0.99, failures: 1, total: 100, window_seconds: 0.5 })).toThrow();
+  });
 });
 
 describe("designRateLimiter", () => {
@@ -87,8 +93,18 @@ describe("designRateLimiter", () => {
 
   it("emits Python and Rust snippets that reference the right primitives", () => {
     const out = designRateLimiter({ rps: 50 });
-    expect(out.config.python).toContain("RateLimiter(rps=50");
+    expect(out.config.python).toContain("from rate_limit_shield import TokenBucket");
+    expect(out.config.python).toContain("TokenBucket(capacity=100, refill_rate=50)");
+    expect(out.config.python).toContain("BoundedSemaphore(value=100)");
     expect(out.config.rust).toContain("RateLimiter::new(50");
+  });
+
+  it("emits valid Rust numeric literal shapes for fractional rates and rejects u32 overflow", () => {
+    expect(designRateLimiter({ rps: 0.5 }).config.rust).toContain("RateLimiter::new(0.5, 1)");
+    expect(designRateLimiter({ rps: 1e-7 }).config.rust).toContain("RateLimiter::new(1e-7, 1)");
+    expect(() => designRateLimiter({ rps: 0xffff_ffff })).toThrow();
+    expect(() => designRateLimiter({ rps: 100, expected_concurrency: Number.MAX_SAFE_INTEGER })).toThrow();
+    expect(() => designRateLimiter({ rps: 1e-300 })).toThrow();
   });
 
   it("rejects non-positive rps", () => {
@@ -105,9 +121,10 @@ describe("designCircuitBreaker", () => {
     expect(out.half_open_max_calls).toBe(1);
   });
 
-  it("flags a generous threshold against a tight SLO budget", () => {
+  it("explains that SLO target alone cannot validate a breaker threshold", () => {
     const out = designCircuitBreaker({ failure_threshold: 50, protected_slo_target: 0.999 });
-    expect(out.notes.some((n) => /failure_threshold/.test(n))).toBe(true);
+    expect(out.notes.some((n) => /does not determine/.test(n))).toBe(true);
+    expect(out.notes.some((n) => /generous/.test(n))).toBe(false);
   });
 
   it("flags short cool-downs", () => {
@@ -119,8 +136,16 @@ describe("designCircuitBreaker", () => {
     const out = designCircuitBreaker({ failure_threshold: 3, cool_down_seconds: 20 });
     expect(out.config.python).toContain("CircuitBreaker(");
     expect(out.config.python).toContain("failure_threshold=3");
+    expect(out.config.python).toContain("recovery_timeout=20");
     expect(out.config.rust).toContain(".failure_threshold(3)");
-    expect(out.config.rust).toContain("Duration::from_secs(20)");
+    expect(out.config.rust).toContain("Duration::from_secs_f64(20.0)");
+  });
+
+  it("supports fractional cool-down and rejects Rust u32 thresholds", () => {
+    expect(designCircuitBreaker({ cool_down_seconds: 0.5 }).config.rust).toContain("Duration::from_secs_f64(0.5)");
+    expect(() => designCircuitBreaker({ failure_threshold: 0x1_0000_0000 })).toThrow();
+    expect(() => designCircuitBreaker({ half_open_max_calls: 0x1_0000_0000 })).toThrow();
+    expect(() => designCircuitBreaker({ cool_down_seconds: 1e300 })).toThrow();
   });
 
   it("rejects invalid SLO target", () => {
@@ -130,7 +155,7 @@ describe("designCircuitBreaker", () => {
 });
 
 describe("composePattern", () => {
-  it("returns the canonical layered stack", () => {
+  it("returns a proposed layered stack and setup examples", () => {
     const out = composePattern({
       service_name: "checkout",
       rps: 200,
@@ -141,12 +166,20 @@ describe("composePattern", () => {
     expect(out.rate_limiter.rps).toBe(200);
     expect(out.slo.target).toBe(0.999);
     expect(out.config.python).toContain("checkout");
-    expect(out.config.rust).toContain("checkout");
+    expect(out.config.rust).toContain("RateLimiter::new(200.0, 400)");
   });
 
   it("rejects an empty service name", () => {
     expect(() =>
       composePattern({ service_name: "", rps: 100, protected_slo_target: 0.99 }),
     ).toThrow();
+  });
+
+  it("does not let a service label inject Python statements or Rust comments", () => {
+    expect(() => composePattern({ service_name: "checkout\nprint('owned')", rps: 100, protected_slo_target: 0.99 })).toThrow();
+    expect(() => composePattern({ service_name: "checkout\u2028print('owned')", rps: 100, protected_slo_target: 0.99 })).toThrow();
+    const out = composePattern({ service_name: 'checkout"; print(1)', rps: 100, protected_slo_target: 0.99 });
+    expect(out.config.python).toContain('name="checkout\\"; print(1)"');
+    expect(out.config.rust).not.toContain("print(1)");
   });
 });

@@ -28,41 +28,41 @@ export const tools: ToolHandler[] = [];
 
 const SLOBurnSchema = z.object({
   target: z.number().gt(0).lt(1).describe("SLO target ratio in (0, 1). E.g. 0.999 for three nines."),
-  failures: z.number().int().nonnegative().describe("Failures in the window."),
-  total: z.number().int().nonnegative().describe("Total observations in the window."),
-  window_seconds: z.number().int().positive().describe("Window length in seconds."),
-});
+  failures: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).describe("Failures in the window."),
+  total: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).describe("Total observations in the window."),
+  window_seconds: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).describe("Window length in seconds."),
+}).strict();
 
 const RateLimiterSchema = z.object({
-  rps: z.number().positive().describe("Steady-state requests per second the downstream should accept."),
+  rps: z.number().finite().min(1 / (365 * 24 * 3600)).describe("Steady-state requests per second; at least one request per year."),
   burst_factor: z
     .number()
-    .min(1)
+    .finite().min(1)
     .optional()
     .describe("Token bucket capacity = rps * burst_factor. Default 2."),
   expected_concurrency: z
     .number()
-    .nonnegative()
+    .finite().nonnegative()
     .optional()
     .describe("Typical concurrent callers; used to suggest a bulkhead size."),
-});
+}).strict();
 
 const BreakerSchema = z.object({
   failure_threshold: z
     .number()
     .int()
-    .positive()
+    .positive().max(0xffff_ffff)
     .optional()
     .describe("Consecutive failures before the breaker trips. Default 5."),
   cool_down_seconds: z
     .number()
-    .positive()
+    .finite().positive().max(365 * 24 * 3600)
     .optional()
     .describe("How long the breaker stays open. Default 30."),
   half_open_max_calls: z
     .number()
     .int()
-    .positive()
+    .positive().max(0xffff_ffff)
     .optional()
     .describe("Calls admitted in half-open. Default 1."),
   protected_slo_target: z
@@ -70,15 +70,15 @@ const BreakerSchema = z.object({
     .gt(0)
     .lt(1)
     .optional()
-    .describe("If set, the breaker will sanity-check against the SLO error budget."),
-});
+    .describe("Optional context; a target alone cannot determine a consecutive-failure threshold."),
+}).strict();
 
 const ComposeSchema = z.object({
-  service_name: z.string().min(1),
-  rps: z.number().positive(),
+  service_name: z.string().min(1).max(128).regex(/^[^\x00-\x1f\x7f\u2028\u2029]*$/),
+  rps: z.number().finite().min(1 / (365 * 24 * 3600)),
   protected_slo_target: z.number().gt(0).lt(1),
-  expected_concurrency: z.number().nonnegative().optional(),
-});
+  expected_concurrency: z.number().finite().nonnegative().optional(),
+}).strict();
 
 export function registerTools(): void {
   tools.length = 0;
@@ -86,8 +86,8 @@ export function registerTools(): void {
   tools.push({
     name: "compute_slo_burn",
     description:
-      "Compute SLO burn rate, error budget remaining, time-to-exhaustion, and a paging alert level " +
-      "from raw observation counts. Mirrors the math in slo-budget-tracker.",
+      "Compute SLO burn rate and error budget from counts, plus single-window exhaustion and alert-tier estimates. " +
+      "Ratio and burn calculations mirror slo-budget-tracker; this is not a multi-window paging decision.",
     inputSchema: zodToJsonSchema(SLOBurnSchema),
     handler: (args) => {
       const parsed = SLOBurnSchema.parse(args);
@@ -98,8 +98,8 @@ export function registerTools(): void {
   tools.push({
     name: "design_rate_limiter",
     description:
-      "Given rps + burst_factor, return a sized token-bucket config plus drop-in Python and Rust " +
-      "snippets that wire it into rate-limit-shield (Python) or reliability-toolkit (Rust).",
+      "Given rps + burst_factor, return token-bucket sizing and Python/Rust integration examples " +
+      "for rate-limit-shield (Python) and reliability-toolkit (Rust). Review before use.",
     inputSchema: zodToJsonSchema(RateLimiterSchema),
     handler: (args) => {
       const parsed = RateLimiterSchema.parse(args);
@@ -111,8 +111,8 @@ export function registerTools(): void {
     name: "design_circuit_breaker",
     description:
       "Given failure_threshold + cool_down + half_open_max_calls, return a sanity-checked breaker " +
-      "config with Python and Rust snippets. When protected_slo_target is given, the tool also flags " +
-      "thresholds that look inconsistent with the SLO's error budget.",
+      "config with Python and Rust examples. An SLO target alone cannot validate the threshold " +
+      "without request volume and failure-pattern evidence.",
     inputSchema: zodToJsonSchema(BreakerSchema),
     handler: (args) => {
       const parsed = BreakerSchema.parse(args);
@@ -123,9 +123,8 @@ export function registerTools(): void {
   tools.push({
     name: "compose_reliability_pattern",
     description:
-      "Given service_name + rps + protected_slo_target, return the recommended layered stack — " +
-      "rate-limiter → bulkhead → circuit-breaker → retry → SLO tracker — plus a Python and Rust " +
-      "config snippet you can paste into the service.",
+      "Given service_name + rps + protected_slo_target, return a proposed layered design and " +
+      "Python/Rust setup examples. Retry, monitoring, and end-to-end call wiring require integration work.",
     inputSchema: zodToJsonSchema(ComposeSchema),
     handler: (args) => {
       const parsed = ComposeSchema.parse(args);
@@ -166,11 +165,22 @@ function zodTypeToJsonSchema(type: z.ZodTypeAny): Record<string, unknown> {
   }
   const description = type._def.description;
   if (type instanceof z.ZodString) {
-    return { type: "string", ...(description ? { description } : {}) };
+    const out: Record<string, unknown> = { type: "string", ...(description ? { description } : {}) };
+    for (const check of type._def.checks) {
+      if (check.kind === "min") out.minLength = check.value;
+      if (check.kind === "max") out.maxLength = check.value;
+      if (check.kind === "regex") out.pattern = check.regex.source;
+    }
+    return out;
   }
   if (type instanceof z.ZodNumber) {
     const out: Record<string, unknown> = { type: "number" };
     if (description) out.description = description;
+    for (const check of type._def.checks) {
+      if (check.kind === "int") out.type = "integer";
+      if (check.kind === "min") out[check.inclusive ? "minimum" : "exclusiveMinimum"] = check.value;
+      if (check.kind === "max") out[check.inclusive ? "maximum" : "exclusiveMaximum"] = check.value;
+    }
     return out;
   }
   if (type instanceof z.ZodBoolean) {

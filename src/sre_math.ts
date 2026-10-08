@@ -49,14 +49,14 @@ export function computeBurn(input: SLOBurnInput): SLOBurnOutput {
   if (!Number.isFinite(target) || target <= 0 || target >= 1) {
     throw new RangeError(`target must be in (0, 1); got ${target}`);
   }
-  if (!Number.isFinite(failures) || failures < 0) {
-    throw new RangeError(`failures must be non-negative; got ${failures}`);
+  if (!Number.isSafeInteger(failures) || failures < 0) {
+    throw new RangeError(`failures must be a non-negative safe integer; got ${failures}`);
   }
-  if (!Number.isFinite(total) || total < 0 || total < failures) {
-    throw new RangeError(`total must be non-negative and >= failures; got total=${total}, failures=${failures}`);
+  if (!Number.isSafeInteger(total) || total < 0 || total < failures) {
+    throw new RangeError(`total must be a non-negative safe integer and >= failures; got total=${total}, failures=${failures}`);
   }
-  if (!Number.isFinite(window_seconds) || window_seconds <= 0) {
-    throw new RangeError(`window_seconds must be positive; got ${window_seconds}`);
+  if (!Number.isSafeInteger(window_seconds) || window_seconds <= 0) {
+    throw new RangeError(`window_seconds must be a positive safe integer; got ${window_seconds}`);
   }
 
   const success_ratio = total === 0 ? 1.0 : (total - failures) / total;
@@ -123,7 +123,7 @@ export interface RateLimiterDesignOutput {
   burst: number;
   refill_interval_ms: number;
   bulkhead_capacity: number;
-  /** Drop-in config snippets. */
+  /** Setup examples; callers must wire them into their request paths. */
   config: {
     python: string;
     rust: string;
@@ -131,11 +131,13 @@ export interface RateLimiterDesignOutput {
   };
 }
 
+const MIN_RPS = 1 / (365 * 24 * 3600);
+
 export function designRateLimiter(input: RateLimiterDesignInput): RateLimiterDesignOutput {
   const { rps, burst_factor = 2, expected_concurrency = 0 } = input;
 
-  if (!Number.isFinite(rps) || rps <= 0) {
-    throw new RangeError(`rps must be positive; got ${rps}`);
+  if (!Number.isFinite(rps) || rps < MIN_RPS) {
+    throw new RangeError(`rps must be at least one request per year; got ${rps}`);
   }
   if (!Number.isFinite(burst_factor) || burst_factor < 1) {
     throw new RangeError(`burst_factor must be >= 1; got ${burst_factor}`);
@@ -145,9 +147,18 @@ export function designRateLimiter(input: RateLimiterDesignInput): RateLimiterDes
   }
 
   const burst = Math.max(1, Math.ceil(rps * burst_factor));
+  if (!Number.isSafeInteger(burst) || burst > 0xffff_ffff) {
+    throw new RangeError("rps * burst_factor exceeds the Rust limiter's u32 burst capacity");
+  }
   const refill_interval_ms = 1000 / rps;
+  if (!Number.isFinite(refill_interval_ms)) {
+    throw new RangeError("rps is too small to represent a finite refill interval");
+  }
   // A pragmatic bulkhead suggestion: enough to soak the burst at 2x concurrency.
   const bulkhead_capacity = Math.max(burst, Math.ceil(expected_concurrency * 2) || burst);
+  if (!Number.isSafeInteger(bulkhead_capacity)) {
+    throw new RangeError("bulkhead_capacity must be a safe integer");
+  }
 
   return {
     rps,
@@ -167,11 +178,12 @@ export function designRateLimiter(input: RateLimiterDesignInput): RateLimiterDes
 
 function pythonRateLimiterSnippet(rps: number, burst: number, bulkhead: number): string {
   return [
-    "# pip install rate-limit-shield",
-    "from rate_limit_shield import RateLimiter, Bulkhead",
+    "# Install rate-limit-shield from a reviewed source revision (not currently on PyPI)",
+    "from threading import BoundedSemaphore",
+    "from rate_limit_shield import TokenBucket",
     "",
-    `limiter = RateLimiter(rps=${rps}, burst=${burst})`,
-    `bulkhead = Bulkhead(capacity=${bulkhead})`,
+    `limiter = TokenBucket(capacity=${burst}, refill_rate=${rps})`,
+    `bulkhead = BoundedSemaphore(value=${bulkhead})`,
   ].join("\n");
 }
 
@@ -179,9 +191,14 @@ function rustRateLimiterSnippet(rps: number, burst: number, bulkhead: number): s
   return [
     "use reliability_toolkit::{RateLimiter, Bulkhead};",
     "",
-    `let limiter = RateLimiter::new(${rps}.0, ${burst});`,
+    `let limiter = RateLimiter::new(${rustFloat(rps)}, ${burst});`,
     `let pool    = Bulkhead::new(${bulkhead});`,
   ].join("\n");
+}
+
+function rustFloat(value: number): string {
+  const literal = String(value);
+  return /[.eE]/.test(literal) ? literal : `${literal}.0`;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,8 +212,8 @@ export interface BreakerDesignInput {
   cool_down_seconds?: number;
   /** Calls admitted in half-open. Default 1. */
   half_open_max_calls?: number;
-  /** Optional: SLO target the caller is protecting. If supplied, the breaker
-   *  threshold suggestion will be sanity-checked against it. */
+  /** Optional SLO target for context; an SLO target alone cannot determine a
+   *  consecutive-failure threshold without request volume and failure shape. */
   protected_slo_target?: number;
 }
 
@@ -220,28 +237,26 @@ export function designCircuitBreaker(input: BreakerDesignInput): BreakerDesignOu
     protected_slo_target,
   } = input;
 
-  if (!Number.isInteger(failure_threshold) || failure_threshold < 1) {
+  if (!Number.isSafeInteger(failure_threshold) || failure_threshold < 1 || failure_threshold > 0xffff_ffff) {
     throw new RangeError(`failure_threshold must be a positive integer; got ${failure_threshold}`);
   }
-  if (!Number.isFinite(cool_down_seconds) || cool_down_seconds <= 0) {
-    throw new RangeError(`cool_down_seconds must be positive; got ${cool_down_seconds}`);
+  if (!Number.isFinite(cool_down_seconds) || cool_down_seconds <= 0 || cool_down_seconds > 365 * 24 * 3600) {
+    throw new RangeError(`cool_down_seconds must be in (0, 31536000]; got ${cool_down_seconds}`);
   }
-  if (!Number.isInteger(half_open_max_calls) || half_open_max_calls < 1) {
+  if (!Number.isSafeInteger(half_open_max_calls) || half_open_max_calls < 1 || half_open_max_calls > 0xffff_ffff) {
     throw new RangeError(`half_open_max_calls must be a positive integer; got ${half_open_max_calls}`);
   }
-  if (protected_slo_target !== undefined && (protected_slo_target <= 0 || protected_slo_target >= 1)) {
+  if (protected_slo_target !== undefined &&
+      (!Number.isFinite(protected_slo_target) || protected_slo_target <= 0 || protected_slo_target >= 1)) {
     throw new RangeError(`protected_slo_target must be in (0, 1); got ${protected_slo_target}`);
   }
 
   const notes: string[] = [];
   if (protected_slo_target !== undefined) {
-    const errorBudget = 1 - protected_slo_target;
-    if (failure_threshold > errorBudget * 100) {
-      notes.push(
-        `failure_threshold=${failure_threshold} is generous given the protected SLO ` +
-          `(error budget = ${(errorBudget * 100).toFixed(2)}%). Consider lowering.`,
-      );
-    }
+    notes.push(
+      `Protected SLO ${protected_slo_target} does not determine a consecutive-failure threshold. ` +
+        "Validate this setting against request volume and the observed failure pattern.",
+    );
   }
   if (cool_down_seconds < 10) {
     notes.push("cool_down_seconds < 10s tends to flap. 10-60s is the typical sweet spot.");
@@ -268,12 +283,12 @@ export function designCircuitBreaker(input: BreakerDesignInput): BreakerDesignOu
 
 function pythonBreakerSnippet(threshold: number, cool: number, halfOpen: number): string {
   return [
-    "# pip install rate-limit-shield",
+    "# Install rate-limit-shield from a reviewed source revision (not currently on PyPI)",
     "from rate_limit_shield import CircuitBreaker",
     "",
     `breaker = CircuitBreaker(`,
     `    failure_threshold=${threshold},`,
-    `    cool_down_seconds=${cool},`,
+    `    recovery_timeout=${cool},`,
     `    half_open_max_calls=${halfOpen},`,
     `)`,
   ].join("\n");
@@ -286,7 +301,7 @@ function rustBreakerSnippet(threshold: number, cool: number, halfOpen: number): 
     "",
     `let breaker = CircuitBreaker::builder()`,
     `    .failure_threshold(${threshold})`,
-    `    .cool_down(Duration::from_secs(${cool}))`,
+    `    .cool_down(Duration::from_secs_f64(${rustFloat(cool)}))`,
     `    .half_open_max_calls(${halfOpen})`,
     `    .build();`,
   ].join("\n");
@@ -309,7 +324,7 @@ export interface ComposePatternOutput {
   rate_limiter: RateLimiterDesignOutput;
   circuit_breaker: BreakerDesignOutput;
   slo: { target: number; window_seconds: number };
-  /** A whole-stack config a service could paste in. */
+  /** Setup examples for selected layers; retry and telemetry wiring remain external. */
   config: {
     python: string;
     rust: string;
@@ -318,8 +333,8 @@ export interface ComposePatternOutput {
 
 export function composePattern(input: ComposePatternInput): ComposePatternOutput {
   const { service_name, rps, protected_slo_target, expected_concurrency = 0 } = input;
-  if (!service_name || !service_name.trim()) {
-    throw new RangeError("service_name must be non-empty");
+  if (!service_name || !service_name.trim() || service_name.length > 128 || /[\x00-\x1f\x7f\u2028\u2029]/.test(service_name)) {
+    throw new RangeError("service_name must be 1-128 printable characters");
   }
 
   const rl = designRateLimiter({ rps, expected_concurrency });
@@ -339,17 +354,17 @@ export function composePattern(input: ComposePatternInput): ComposePatternOutput
     slo: { target: protected_slo_target, window_seconds: 30 * 24 * 3600 },
     config: {
       python: [
-        `# ${service_name} — composed reliability stack`,
+        "# Composed reliability stack",
         rl.config.python,
         "",
         cb.config.python,
         "",
         "# pip install slo-budget-tracker",
         "from slo_budget_tracker import SLODefinition, SLOTracker",
-        `slo = SLOTracker(SLODefinition(name="${service_name}", target=${protected_slo_target}))`,
+        `slo = SLOTracker(SLODefinition(name=${JSON.stringify(service_name)}, target=${protected_slo_target}))`,
       ].join("\n"),
       rust: [
-        `// ${service_name} — composed reliability stack`,
+        "// Composed reliability stack",
         rl.config.rust,
         "",
         cb.config.rust,

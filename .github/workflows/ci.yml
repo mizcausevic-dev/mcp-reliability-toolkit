@@ -29,8 +29,25 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Lint
+        run: npm run lint
+
       - name: Build
         run: npm run build
 
       - name: Test
         run: npm test
+
+      - name: MCP stdio smoke
+        run: npm run test:stdio
+
+      - name: Set up Python for generated recipe check
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check generated Python and Rust syntax
+        run: |
+          python --version
+          rustc --version
+          npm run test:recipes
