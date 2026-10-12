@@ -30,6 +30,11 @@ try {
     arguments: { target: 0.99, failures: 1, total: 100, window_seconds: 3600, extra: true },
   });
   assert.equal(rejected.isError, true);
+  const emptyWindow = await client.callTool({
+    name: "compute_slo_burn",
+    arguments: { target: 0.99, failures: 0, total: 0, window_seconds: 3600 },
+  });
+  assert.equal(emptyWindow.isError, true);
   process.stdout.write("MCP stdio initialize, list_tools, call_tool, invalid-input rejection: passed\n");
 } finally {
   await client.close();

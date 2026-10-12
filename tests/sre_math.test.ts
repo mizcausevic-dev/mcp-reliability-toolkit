@@ -62,6 +62,7 @@ describe("computeBurn", () => {
   });
 
   it("rejects negative or impossible counts", () => {
+    expect(() => computeBurn({ target: 0.99, failures: 0, total: 0, window_seconds: 60 })).toThrow(/total must be a positive safe integer/);
     expect(() => computeBurn({ target: 0.99, failures: -1, total: 100, window_seconds: 60 })).toThrow();
     expect(() => computeBurn({ target: 0.99, failures: 50, total: 10, window_seconds: 60 })).toThrow();
   });

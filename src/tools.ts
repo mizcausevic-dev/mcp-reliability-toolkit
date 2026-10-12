@@ -29,7 +29,7 @@ export const tools: ToolHandler[] = [];
 const SLOBurnSchema = z.object({
   target: z.number().gt(0).lt(1).describe("SLO target ratio in (0, 1). E.g. 0.999 for three nines."),
   failures: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).describe("Failures in the window."),
-  total: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).describe("Total observations in the window."),
+  total: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).describe("Total observations in the window; at least one required. An empty window has no SLO result."),
   window_seconds: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).describe("Window length in seconds."),
 }).strict();
 
@@ -86,8 +86,8 @@ export function registerTools(): void {
   tools.push({
     name: "compute_slo_burn",
     description:
-      "Compute SLO burn rate and error budget from counts, plus single-window exhaustion and alert-tier estimates. " +
-      "Ratio and burn calculations mirror slo-budget-tracker; this is not a multi-window paging decision.",
+      "Compute SLO burn rate and error budget from a nonempty observation window, plus single-window exhaustion and alert-tier estimates. " +
+      "Ratio and burn calculations mirror slo-budget-tracker for nonempty windows; this is not a multi-window paging decision.",
     inputSchema: zodToJsonSchema(SLOBurnSchema),
     handler: (args) => {
       const parsed = SLOBurnSchema.parse(args);

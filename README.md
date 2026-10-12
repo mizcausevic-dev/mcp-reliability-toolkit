@@ -18,7 +18,7 @@ Pairs with:
 
 The Platform Reliability Stack already gives you the math (`slo-budget-tracker`) and the primitives (`reliability-toolkit-rs`). What it didn't give you was the moment in a design conversation where you say "Claude, given 500 rps and a 99.9 SLO, what should my breaker + bulkhead look like?" — and have Claude actually compute it instead of vibing.
 
-This server provides deterministic calculations from `src/sre_math.ts`. Its success ratio, error budget remaining, and burn rate match the corresponding `slo-budget-tracker` snapshot formulas for the same counts. Its single-window alert tier and time-to-exhaustion are estimates; `slo-budget-tracker` uses separately sampled windows for alerts. No LLM computes the numbers.
+This server provides deterministic calculations from `src/sre_math.ts`. For nonempty windows, its success ratio, error budget remaining, and burn rate match the corresponding `slo-budget-tracker` snapshot formulas for the same counts. An empty window is rejected rather than reported as healthy. Its single-window alert tier and time-to-exhaustion are estimates; `slo-budget-tracker` uses separately sampled windows for alerts. No LLM computes the numbers.
 
 ---
 
@@ -26,7 +26,7 @@ This server provides deterministic calculations from `src/sre_math.ts`. Its succ
 
 | Tool | What it does |
 | --- | --- |
-| `compute_slo_burn` | Burn rate and error budget from raw `(target, failures, total, window_seconds)`, plus a single-window alert tier and exhaustion estimate. This does not make a paging decision. |
+| `compute_slo_burn` | Burn rate and error budget from raw `(target, failures, total, window_seconds)` with `total >= 1`, plus a single-window alert tier and exhaustion estimate. This does not make a paging decision. |
 | `design_rate_limiter` | Token-bucket sizing from `rps` + `burst_factor`, plus Python (`rate-limit-shield`) and Rust (`reliability-toolkit`) setup examples and a JSON config. |
 | `design_circuit_breaker` | Threshold + cool-down + half-open setup examples with basic validation notes. An SLO target alone cannot determine a safe consecutive-failure threshold. |
 | `compose_reliability_pattern` | Given service name + rps + protected SLO target, returns a proposed layered design and setup examples. Retry, monitoring, and call-path wiring are not implemented by the generated snippets. |
@@ -123,7 +123,7 @@ CI matrix runs Node 20 and 22.
 src/
   index.ts        # MCP stdio server entry point
   tools.ts        # tool registry: zod schemas, JSON-Schema export, handlers
-  sre_math.ts     # pure functions; core ratio and burn formulas match slo-budget-tracker
+  sre_math.ts     # pure functions; nonempty-window ratios and burn match slo-budget-tracker
 tests/
   sre_math.test.ts
   tools.test.ts

@@ -14,7 +14,7 @@ export interface SLOBurnInput {
   target: number;
   /** Failures observed in the window. */
   failures: number;
-  /** Total observations in the window. */
+  /** Total observations in the window; at least one is required. */
   total: number;
   /** Window length in seconds (used only for time-to-exhaustion math). */
   window_seconds: number;
@@ -52,14 +52,14 @@ export function computeBurn(input: SLOBurnInput): SLOBurnOutput {
   if (!Number.isSafeInteger(failures) || failures < 0) {
     throw new RangeError(`failures must be a non-negative safe integer; got ${failures}`);
   }
-  if (!Number.isSafeInteger(total) || total < 0 || total < failures) {
-    throw new RangeError(`total must be a non-negative safe integer and >= failures; got total=${total}, failures=${failures}`);
+  if (!Number.isSafeInteger(total) || total < 1 || total < failures) {
+    throw new RangeError(`total must be a positive safe integer and >= failures; got total=${total}, failures=${failures}`);
   }
   if (!Number.isSafeInteger(window_seconds) || window_seconds <= 0) {
     throw new RangeError(`window_seconds must be a positive safe integer; got ${window_seconds}`);
   }
 
-  const success_ratio = total === 0 ? 1.0 : (total - failures) / total;
+  const success_ratio = (total - failures) / total;
   const error_budget_ratio = 1 - target;
   const error_budget_failures = error_budget_ratio * total;
   const error_budget_remaining =

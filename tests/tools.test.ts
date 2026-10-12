@@ -67,6 +67,7 @@ describe("MCP tool registry", () => {
 
   it("rejects an unknown argument shape", () => {
     const burn = tools.find((t) => t.name === "compute_slo_burn")!;
+    expect(() => burn.handler({ target: 0.99, failures: 0, total: 0, window_seconds: 1 })).toThrow();
     expect(() => burn.handler({ target: "high", failures: 1, total: 100, window_seconds: 1 })).toThrow();
     expect(() => burn.handler({ target: 0.99, failures: 1, total: 100, window_seconds: 1, extra: true })).toThrow();
   });
@@ -76,6 +77,7 @@ describe("MCP tool registry", () => {
     const properties = burn.inputSchema.properties as Record<string, Record<string, unknown>>;
     expect(properties.failures.type).toBe("integer");
     expect(properties.failures.minimum).toBe(0);
+    expect(properties.total.exclusiveMinimum).toBe(0);
     expect(properties.target.exclusiveMinimum).toBe(0);
     expect(properties.target.exclusiveMaximum).toBe(1);
   });
