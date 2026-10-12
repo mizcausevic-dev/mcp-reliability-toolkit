@@ -36,13 +36,15 @@ describe("MCP tool registry", () => {
     expect(typeof result.burn_rate).toBe("number");
     expect(typeof result.alert_level).toBe("string");
     expect(result.is_breached).toBe(false);
+    expect(result.seconds_to_exhaustion).toBeNull();
   });
 
   it("design_rate_limiter handler emits both language snippets", () => {
     const tool = tools.find((t) => t.name === "design_rate_limiter")!;
     const result = tool.handler({ rps: 50 }) as Record<string, { python: string; rust: string }>;
-    expect(result.config.python).toContain("RateLimiter");
+    expect(result.config.python).toContain("TokenBucket");
     expect(result.config.rust).toContain("RateLimiter::new(50");
+    expect(() => tool.handler({ rps: 1e-300 })).toThrow();
   });
 
   it("design_circuit_breaker validates inputs", () => {
@@ -50,6 +52,7 @@ describe("MCP tool registry", () => {
     // failure_threshold must be a positive integer.
     expect(() => tool.handler({ failure_threshold: 0 })).toThrow();
     expect(() => tool.handler({ failure_threshold: 1.5 })).toThrow();
+    expect(() => tool.handler({ cool_down_seconds: 1e300 })).toThrow();
   });
 
   it("compose_reliability_pattern returns the layered stack + config", () => {
@@ -65,6 +68,29 @@ describe("MCP tool registry", () => {
 
   it("rejects an unknown argument shape", () => {
     const burn = tools.find((t) => t.name === "compute_slo_burn")!;
+    expect(() => burn.handler({ target: 0.99, failures: 0, total: 0, window_seconds: 1 })).toThrow();
     expect(() => burn.handler({ target: "high", failures: 1, total: 100, window_seconds: 1 })).toThrow();
+    expect(() => burn.handler({ target: 0.99, failures: 1, total: 100, window_seconds: 1, extra: true })).toThrow();
+  });
+
+  it("advertises integer counts and numeric bounds in its JSON Schema", () => {
+    const burn = tools.find((t) => t.name === "compute_slo_burn")!;
+    const properties = burn.inputSchema.properties as Record<string, Record<string, unknown>>;
+    expect(properties.failures.type).toBe("integer");
+    expect(properties.failures.minimum).toBe(0);
+    expect(properties.total.exclusiveMinimum).toBe(0);
+    expect(properties.target.exclusiveMinimum).toBe(0);
+    expect(properties.target.exclusiveMaximum).toBe(1);
+    expect(properties.budget_period_seconds.type).toBe("integer");
+    expect(properties.budget_remaining_fraction.minimum).toBe(0);
+    expect(properties.budget_remaining_fraction.maximum).toBe(1);
+    expect(burn.inputSchema.required).not.toContain("budget_period_seconds");
+  });
+
+  it("rejects period budget inputs unless supplied together", () => {
+    const burn = tools.find((t) => t.name === "compute_slo_burn")!;
+    const sample = { target: 0.99, failures: 1, total: 1_000, window_seconds: 3600 };
+    expect(() => burn.handler({ ...sample, budget_period_seconds: 30 * 24 * 3600 })).toThrow(/supplied together/);
+    expect(() => burn.handler({ ...sample, budget_remaining_fraction: 0.5 })).toThrow(/supplied together/);
   });
 });
