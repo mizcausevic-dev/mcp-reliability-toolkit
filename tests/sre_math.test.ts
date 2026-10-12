@@ -51,9 +51,59 @@ describe("computeBurn", () => {
     expect(out.alert_level).toBe("page");
   });
 
-  it("seconds_to_exhaustion is null when burn_rate is 0", () => {
-    const out = computeBurn({ target: 0.99, failures: 0, total: 1_000, window_seconds: 3600 });
+  it("does not infer a period budget balance from a one-hour sample", () => {
+    const out = computeBurn({ target: 0.99, failures: 1, total: 1_000, window_seconds: 3600 });
+    expect(out.error_budget_remaining).toBeCloseTo(0.9);
     expect(out.seconds_to_exhaustion).toBeNull();
+  });
+
+  it("does not project exhaustion beyond a 30-day budget horizon", () => {
+    const out = computeBurn({
+      target: 0.99, failures: 1, total: 1_000, window_seconds: 3600,
+      budget_period_seconds: 30 * 24 * 3600,
+      budget_remaining_fraction: 0.5,
+    });
+    expect(out.burn_rate).toBeCloseTo(0.1);
+    expect(out.error_budget_remaining).toBeCloseTo(0.9);
+    expect(out.seconds_to_exhaustion).toBeNull();
+  });
+
+  it("estimates within-period exhaustion from the authoritative remaining fraction", () => {
+    const out = computeBurn({
+      target: 0.99, failures: 20, total: 1_000, window_seconds: 3600,
+      budget_period_seconds: 30 * 24 * 3600,
+      budget_remaining_fraction: 0.5,
+    });
+    expect(out.burn_rate).toBeCloseTo(2);
+    expect(out.seconds_to_exhaustion).toBeCloseTo(7.5 * 24 * 3600);
+  });
+
+  it("seconds_to_exhaustion is null when burn_rate is 0", () => {
+    const out = computeBurn({
+      target: 0.99, failures: 0, total: 1_000, window_seconds: 3600,
+      budget_period_seconds: 30 * 24 * 3600,
+      budget_remaining_fraction: 0.5,
+    });
+    expect(out.seconds_to_exhaustion).toBeNull();
+  });
+
+  it("returns zero for an exhausted authoritative period budget", () => {
+    const out = computeBurn({
+      target: 0.99, failures: 0, total: 1_000, window_seconds: 3600,
+      budget_period_seconds: 30 * 24 * 3600,
+      budget_remaining_fraction: 0,
+    });
+    expect(out.seconds_to_exhaustion).toBe(0);
+  });
+
+  it("rejects incomplete or inconsistent period-budget inputs", () => {
+    const sample = { target: 0.99, failures: 1, total: 1_000, window_seconds: 3600 };
+    expect(() => computeBurn({ ...sample, budget_period_seconds: 30 * 24 * 3600 })).toThrow(/supplied together/);
+    expect(() => computeBurn({ ...sample, budget_remaining_fraction: 0.5 })).toThrow(/supplied together/);
+    expect(() => computeBurn({ ...sample, budget_period_seconds: 1800, budget_remaining_fraction: 0.5 })).toThrow(/at least as long/);
+    expect(() => computeBurn({ ...sample, budget_period_seconds: 30 * 24 * 3600, budget_remaining_fraction: 1.1 })).toThrow(/\[0, 1\]/);
+    expect(() => computeBurn({ ...sample, budget_period_seconds: 30 * 24 * 3600, budget_remaining_fraction: Number.NaN })).toThrow(/\[0, 1\]/);
+    expect(() => computeBurn({ ...sample, budget_period_seconds: Number.MAX_SAFE_INTEGER + 1, budget_remaining_fraction: 0.5 })).toThrow(/safe integer/);
   });
 
   it("rejects target outside (0, 1)", () => {

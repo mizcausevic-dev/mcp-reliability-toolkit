@@ -36,6 +36,7 @@ describe("MCP tool registry", () => {
     expect(typeof result.burn_rate).toBe("number");
     expect(typeof result.alert_level).toBe("string");
     expect(result.is_breached).toBe(false);
+    expect(result.seconds_to_exhaustion).toBeNull();
   });
 
   it("design_rate_limiter handler emits both language snippets", () => {
@@ -80,5 +81,16 @@ describe("MCP tool registry", () => {
     expect(properties.total.exclusiveMinimum).toBe(0);
     expect(properties.target.exclusiveMinimum).toBe(0);
     expect(properties.target.exclusiveMaximum).toBe(1);
+    expect(properties.budget_period_seconds.type).toBe("integer");
+    expect(properties.budget_remaining_fraction.minimum).toBe(0);
+    expect(properties.budget_remaining_fraction.maximum).toBe(1);
+    expect(burn.inputSchema.required).not.toContain("budget_period_seconds");
+  });
+
+  it("rejects period budget inputs unless supplied together", () => {
+    const burn = tools.find((t) => t.name === "compute_slo_burn")!;
+    const sample = { target: 0.99, failures: 1, total: 1_000, window_seconds: 3600 };
+    expect(() => burn.handler({ ...sample, budget_period_seconds: 30 * 24 * 3600 })).toThrow(/supplied together/);
+    expect(() => burn.handler({ ...sample, budget_remaining_fraction: 0.5 })).toThrow(/supplied together/);
   });
 });

@@ -18,7 +18,7 @@ Pairs with:
 
 The Platform Reliability Stack already gives you the math (`slo-budget-tracker`) and the primitives (`reliability-toolkit-rs`). What it didn't give you was the moment in a design conversation where you say "Claude, given 500 rps and a 99.9 SLO, what should my breaker + bulkhead look like?" — and have Claude actually compute it instead of vibing.
 
-This server provides deterministic calculations from `src/sre_math.ts`. For nonempty windows, its success ratio, error budget remaining, and burn rate match the corresponding `slo-budget-tracker` snapshot formulas for the same counts. An empty window is rejected rather than reported as healthy. Its single-window alert tier and time-to-exhaustion are estimates; `slo-budget-tracker` uses separately sampled windows for alerts. No LLM computes the numbers.
+This server provides deterministic calculations from `src/sre_math.ts` for nonempty observation windows. It reports the sample's success ratio, error budget remaining, and burn rate; an empty window is rejected rather than reported as healthy. Its alert tier is a single-window estimate. This server does not reproduce `slo-budget-tracker`'s multi-window alerting or infer a period-budget balance from a sample. No LLM computes the numbers.
 
 ---
 
@@ -26,12 +26,14 @@ This server provides deterministic calculations from `src/sre_math.ts`. For none
 
 | Tool | What it does |
 | --- | --- |
-| `compute_slo_burn` | Burn rate and error budget from raw `(target, failures, total, window_seconds)` with `total >= 1`, plus a single-window alert tier and exhaustion estimate. This does not make a paging decision. |
+| `compute_slo_burn` | Burn rate and observed-window error budget from raw `(target, failures, total, window_seconds)` with `total >= 1`, plus a single-window alert tier. `seconds_to_exhaustion` requires both an SLO `budget_period_seconds` and an authoritative `budget_remaining_fraction`; it is null if the estimate exceeds one period. This does not make a paging decision. |
 | `design_rate_limiter` | Token-bucket sizing from `rps` + `burst_factor`, plus Python (`rate-limit-shield`) and Rust (`reliability-toolkit`) setup examples and a JSON config. |
 | `design_circuit_breaker` | Threshold + cool-down + half-open setup examples with basic validation notes. An SLO target alone cannot determine a safe consecutive-failure threshold. |
 | `compose_reliability_pattern` | Given service name + rps + protected SLO target, returns a proposed layered design and setup examples. Retry, monitoring, and call-path wiring are not implemented by the generated snippets. |
 
 Each tool advertises a JSON Schema. Bad input, including unknown fields, is rejected without coercion.
+
+For example, one failure among 1,000 requests observed over an hour at a 99% target leaves 90% of that **hour's sample budget**. It says nothing about the current 30-day balance. If a trusted SLO tracker separately reports 50% of a 30-day budget remaining, pass `budget_period_seconds: 2592000` and `budget_remaining_fraction: 0.5` together with the one-hour sample. The linear projection would exceed 30 days, so `seconds_to_exhaustion` is null. At a 2x sample burn rate with the same authoritative 50% balance, the bounded projection is 7.5 days. A numeric value assumes no replenishment during that interval; it is not a rolling-window forecast. The tool cannot authenticate the tracker, check the balance's freshness, or account for resets or traffic changes.
 
 The server uses stdio only. Its handlers read caller-supplied values and return calculations; they do not read service telemetry, call providers, persist requests, or open an HTTP listener. Your MCP client controls any onward use of the returned text.
 

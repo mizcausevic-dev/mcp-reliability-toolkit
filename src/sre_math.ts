@@ -1,9 +1,9 @@
 /**
  * SRE math primitives — pure functions, no I/O, fully unit-tested.
  *
- * These are the same shapes used by `slo-budget-tracker` (Python) and
- * `reliability-toolkit-rs` (Rust). The MCP tools in `src/tools/*.ts` are thin
- * wrappers that validate inputs with Zod and call into here.
+ * The MCP tools in `src/tools.ts` validate inputs with Zod and call into
+ * these local calculations. This module does not reproduce a live SLO
+ * tracker's period budget or multi-window alerting.
  *
  * All references back to the Google SRE workbook so reviewers can sanity-check:
  *   https://sre.google/workbook/alerting-on-slos/
@@ -16,8 +16,12 @@ export interface SLOBurnInput {
   failures: number;
   /** Total observations in the window; at least one is required. */
   total: number;
-  /** Window length in seconds (used only for time-to-exhaustion math). */
+  /** Length of the observation sample in seconds. */
   window_seconds: number;
+  /** SLO budget period in seconds. Supply with budget_remaining_fraction for an exhaustion estimate. */
+  budget_period_seconds?: number;
+  /** Authoritative remaining fraction of the period budget, not the sample-window balance. */
+  budget_remaining_fraction?: number;
 }
 
 export interface SLOBurnOutput {
@@ -27,11 +31,11 @@ export interface SLOBurnOutput {
   error_budget_ratio: number;
   /** Allowed failures = error_budget_ratio * total. */
   error_budget_failures: number;
-  /** Fraction of the error budget remaining (1.0 = untouched, <=0 = exhausted). */
+  /** Fraction of the observed window's allowed errors remaining, not the period budget balance. */
   error_budget_remaining: number;
   /** burn_rate = (1 - success_ratio) / (1 - target). 1.0 == "burning at allowed pace". */
   burn_rate: number;
-  /** Estimated seconds until the budget is fully spent at the current burn rate. */
+  /** Bounded linear period-budget estimate; null without both inputs, zero burn, or exhaustion beyond one period. */
   seconds_to_exhaustion: number | null;
   /** Whether actual ratio is below the target. */
   is_breached: boolean;
@@ -41,10 +45,10 @@ export interface SLOBurnOutput {
 
 /**
  * Compute every interesting SLO statistic from raw observation counts.
- * Mirrors `slo-budget-tracker.SLOTracker.snapshot()`.
+ * Calculates ratios from one nonempty observation window.
  */
 export function computeBurn(input: SLOBurnInput): SLOBurnOutput {
-  const { target, failures, total, window_seconds } = input;
+  const { target, failures, total, window_seconds, budget_period_seconds, budget_remaining_fraction } = input;
 
   if (!Number.isFinite(target) || target <= 0 || target >= 1) {
     throw new RangeError(`target must be in (0, 1); got ${target}`);
@@ -58,6 +62,17 @@ export function computeBurn(input: SLOBurnInput): SLOBurnOutput {
   if (!Number.isSafeInteger(window_seconds) || window_seconds <= 0) {
     throw new RangeError(`window_seconds must be a positive safe integer; got ${window_seconds}`);
   }
+  if ((budget_period_seconds === undefined) !== (budget_remaining_fraction === undefined)) {
+    throw new RangeError("budget_period_seconds and budget_remaining_fraction must be supplied together");
+  }
+  if (budget_period_seconds !== undefined &&
+      (!Number.isSafeInteger(budget_period_seconds) || budget_period_seconds < window_seconds)) {
+    throw new RangeError("budget_period_seconds must be a safe integer at least as long as window_seconds");
+  }
+  if (budget_remaining_fraction !== undefined &&
+      (!Number.isFinite(budget_remaining_fraction) || budget_remaining_fraction < 0 || budget_remaining_fraction > 1)) {
+    throw new RangeError("budget_remaining_fraction must be in [0, 1]");
+  }
 
   const success_ratio = (total - failures) / total;
   const error_budget_ratio = 1 - target;
@@ -65,7 +80,9 @@ export function computeBurn(input: SLOBurnInput): SLOBurnOutput {
   const error_budget_remaining =
     error_budget_failures === 0 ? 1.0 : (error_budget_failures - failures) / error_budget_failures;
   const burn_rate = (1 - success_ratio) / error_budget_ratio;
-  const seconds_to_exhaustion = computeSecondsToExhaustion(error_budget_remaining, burn_rate, window_seconds);
+  const seconds_to_exhaustion = budget_period_seconds === undefined || budget_remaining_fraction === undefined
+    ? null
+    : computeSecondsToExhaustion(budget_remaining_fraction, burn_rate, budget_period_seconds);
   const is_breached = success_ratio < target;
   const alert_level = alertLevelFor(burn_rate);
 
@@ -84,7 +101,7 @@ export function computeBurn(input: SLOBurnInput): SLOBurnOutput {
 function computeSecondsToExhaustion(
   remaining: number,
   burnRate: number,
-  windowSeconds: number,
+  budgetPeriodSeconds: number,
 ): number | null {
   if (remaining <= 0) {
     return 0;
@@ -92,9 +109,11 @@ function computeSecondsToExhaustion(
   if (burnRate <= 0) {
     return null;
   }
-  // At burn_rate=1, the budget lasts exactly the window. At burn_rate=N, it
-  // lasts window/N. Remaining-fraction scales that linearly.
-  return (remaining * windowSeconds) / burnRate;
+  // At burn_rate=1, a full period budget lasts one period. The supplied
+  // remaining fraction scales that estimate. A projection beyond one period
+  // cannot describe exhaustion of the current budget period.
+  const estimate = (remaining * budgetPeriodSeconds) / burnRate;
+  return estimate <= budgetPeriodSeconds ? estimate : null;
 }
 
 function alertLevelFor(burnRate: number): "ok" | "watch" | "fast_burn" | "page" {

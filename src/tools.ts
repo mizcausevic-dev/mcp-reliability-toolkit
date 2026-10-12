@@ -30,7 +30,11 @@ const SLOBurnSchema = z.object({
   target: z.number().gt(0).lt(1).describe("SLO target ratio in (0, 1). E.g. 0.999 for three nines."),
   failures: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).describe("Failures in the window."),
   total: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).describe("Total observations in the window; at least one required. An empty window has no SLO result."),
-  window_seconds: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).describe("Window length in seconds."),
+  window_seconds: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).describe("Observation window length in seconds; this is not the SLO budget period."),
+  budget_period_seconds: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()
+    .describe("SLO budget period in seconds. Supply with budget_remaining_fraction; must be at least window_seconds."),
+  budget_remaining_fraction: z.number().finite().min(0).max(1).optional()
+    .describe("Authoritative remaining fraction of the current period budget, in [0, 1]. Supply with budget_period_seconds; do not use the sample-window balance."),
 }).strict();
 
 const RateLimiterSchema = z.object({
@@ -86,8 +90,9 @@ export function registerTools(): void {
   tools.push({
     name: "compute_slo_burn",
     description:
-      "Compute SLO burn rate and error budget from a nonempty observation window, plus single-window exhaustion and alert-tier estimates. " +
-      "Ratio and burn calculations mirror slo-budget-tracker for nonempty windows; this is not a multi-window paging decision.",
+      "Compute SLO burn rate and the observed window's error-budget balance. This is not a multi-window paging decision. " +
+      "For a bounded linear period-budget estimate, supply both budget_period_seconds and an authoritative budget_remaining_fraction. " +
+      "seconds_to_exhaustion is null without them or when the estimate exceeds one period; this is not a rolling-window forecast.",
     inputSchema: zodToJsonSchema(SLOBurnSchema),
     handler: (args) => {
       const parsed = SLOBurnSchema.parse(args);
